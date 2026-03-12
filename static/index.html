@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>个人信息自动处理存档导出工具</title>
+    <style>
+      :root { color-scheme: light; }
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f5f7fb; color: #1f2937; }
+      .wrap { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+      .title { font-size: 26px; font-weight: 700; margin-bottom: 16px; }
+      .grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 16px; }
+      .card { background: white; border-radius: 12px; padding: 16px; box-shadow: 0 2px 12px rgba(0,0,0,.05); }
+      .stat { font-size: 28px; font-weight: 700; margin-top: 8px; color: #2563eb; }
+      .toolbar { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+      input, button { border-radius: 8px; border: 1px solid #d1d5db; padding: 8px 10px; font-size: 14px; }
+      button { background: #2563eb; color: white; border: none; cursor: pointer; }
+      button.secondary { background: #6b7280; }
+      button.danger { background: #dc2626; }
+      table { width: 100%; border-collapse: collapse; background: white; border-radius: 12px; overflow: hidden; }
+      th, td { padding: 10px; border-bottom: 1px solid #e5e7eb; text-align: left; }
+      th { background: #eff6ff; }
+      .msg { margin: 10px 0; font-size: 14px; }
+      .row { display: grid; grid-template-columns: 1fr 1fr 1fr auto; gap: 8px; }
+      @media (max-width: 800px){ .row { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <div class="title">个人信息自动处理存档导出工具（MVP）</div>
+      <div class="grid">
+        <div class="card"><div>人员总数</div><div id="totalPeople" class="stat">0</div></div>
+        <div class="card"><div>部门数量</div><div id="totalDept" class="stat">0</div></div>
+      </div>
+
+      <div class="card">
+        <h3>新增人员</h3>
+        <div class="row">
+          <input id="name" placeholder="姓名" />
+          <input id="department" placeholder="部门" />
+          <input id="tag" placeholder="标签（可选）" />
+          <button onclick="createPerson()">新增</button>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:12px;">
+        <h3>导入 / 导出</h3>
+        <div class="toolbar">
+          <input id="csvFile" type="file" accept=".csv" />
+          <button onclick="importCsv()">导入 CSV</button>
+          <button class="secondary" onclick="exportCsv()">导出 CSV</button>
+        </div>
+      </div>
+
+      <div class="toolbar">
+        <input id="keyword" placeholder="搜索姓名/部门/标签" oninput="loadPeople()" />
+      </div>
+
+      <div id="message" class="msg"></div>
+      <table>
+        <thead>
+          <tr>
+            <th>ID</th><th>姓名</th><th>部门</th><th>标签</th><th>创建时间</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+
+    <script>
+      async function req(url, options={}) {
+        const res = await fetch(url, options);
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({detail:'请求失败'}));
+          throw new Error(err.detail || '请求失败');
+        }
+        const type = res.headers.get('content-type') || '';
+        return type.includes('application/json') ? res.json() : res;
+      }
+
+      function msg(text, isError=false) {
+        const el = document.getElementById('message');
+        el.textContent = text;
+        el.style.color = isError ? '#dc2626' : '#16a34a';
+      }
+
+      async function loadStats() {
+        const data = await req('/api/stats');
+        document.getElementById('totalPeople').textContent = data.total_people;
+        document.getElementById('totalDept').textContent = data.total_departments;
+      }
+
+      async function loadPeople() {
+        const keyword = document.getElementById('keyword').value;
+        const data = await req(`/api/people?keyword=${encodeURIComponent(keyword)}`);
+        const tbody = document.getElementById('tbody');
+        tbody.innerHTML = data.map(p => `
+          <tr>
+            <td>${p.id}</td>
+            <td>${p.name}</td>
+            <td>${p.department}</td>
+            <td>${p.tag || ''}</td>
+            <td>${new Date(p.created_at).toLocaleString()}</td>
+            <td><button class="danger" onclick="delPerson(${p.id})">删除</button></td>
+          </tr>
+        `).join('');
+      }
+
+      async function createPerson() {
+        try {
+          await req('/api/people', {
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({
+              name: document.getElementById('name').value,
+              department: document.getElementById('department').value,
+              tag: document.getElementById('tag').value,
+            })
+          });
+          msg('新增成功');
+          document.getElementById('name').value = '';
+          document.getElementById('department').value = '';
+          document.getElementById('tag').value = '';
+          await loadPeople();
+          await loadStats();
+        } catch(e) { msg(e.message, true); }
+      }
+
+      async function delPerson(id) {
+        if (!confirm('确认删除该人员？')) return;
+        try {
+          await req(`/api/people/${id}`, { method:'DELETE' });
+          msg('删除成功');
+          await loadPeople();
+          await loadStats();
+        } catch(e) { msg(e.message, true); }
+      }
+
+      async function importCsv() {
+        try {
+          const file = document.getElementById('csvFile').files[0];
+          if (!file) throw new Error('请先选择 CSV 文件');
+          const fd = new FormData();
+          fd.append('file', file);
+          const result = await req('/api/import/csv', { method:'POST', body: fd });
+          msg(`导入完成：成功 ${result.success} 条，失败 ${result.failed} 条`);
+          await loadPeople();
+          await loadStats();
+        } catch(e) { msg(e.message, true); }
+      }
+
+      function exportCsv() {
+        window.open('/api/export/csv', '_blank');
+      }
+
+      loadPeople();
+      loadStats();
+    </script>
+  </body>
+</html>
